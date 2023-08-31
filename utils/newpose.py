@@ -21,7 +21,7 @@ count = 0
 start_time = 0
 end_time = 0
 idx = 2
-nocon = False
+condition = False
 
 
 def three_angle(a, b, c):
@@ -41,22 +41,22 @@ def three_angle(a, b, c):
 def start_stt():
     recognizer = sr.Recognizer()
     microphone = sr.Microphone()
-
-    with microphone as source:
-        print("STT 실행. '그만'이라고 말하면 종료")
-        audio_data = recognizer.listen(source, phrase_time_limit=2)
-        try:
-            text = recognizer.recognize_google(
-                audio_data, language='ko-KR')
-            print(f"당신이 말한 것: {text}")
-            if "그만" in text:
-                print("STT 종료됨.")
+    while True:
+        with microphone as source:
+            print("STT 실행. '그만'이라고 말하면 종료")
+            audio_data = recognizer.listen(source, phrase_time_limit=2)
+            try:
+                text = recognizer.recognize_google(
+                    audio_data, language='ko-KR')
+                print(f"당신이 말한 것: {text}")
+                if "그만" in text:
+                    print("STT 종료됨.")
+                    break  # 'return'을 'break'로 변경
+            except sr.UnknownValueError:
+                print("음성을 이해할 수 없습니다.")
+            except sr.RequestError as e:
+                print(f"Could not request results; {e}")
                 return  # 'return'을 'break'로 변경
-        except sr.UnknownValueError:
-            print("음성을 이해할 수 없습니다.")
-        except sr.RequestError as e:
-            print(f"Could not request results; {e}")
-            return  # 'return'을 'break'로 변경
 
 
 def video_start():
@@ -64,7 +64,7 @@ def video_start():
     global start_time
     global count
     global idx
-    global nocon
+    global condition
 
     stt_thread = threading.Thread(
         target=start_stt)  # 별도의 스레드에서 STT 실행
@@ -82,17 +82,20 @@ def video_start():
     knn = cv2.ml.KNearest_create()
     knn.train(x, cv2.ml.ROW_SAMPLE, y)
 
+    # tcp 스레드
+    tcp_thread = threading.Thread(
+        target=faceswap, args=(['images/cap.jpg']))
+    tcp_thread.daemon = True
+
     # Initiate holistic model
     with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
-
+        last_state_change_time = 0
         while cap.isOpened():
-            ret, frame = cap.read()
+            _, frame = cap.read()
 
-            if cv2.waitKey(1) == ord('a'):
+            if cv2.waitKey(1) == ord('a') and not tcp_thread.is_alive():
                 cv2.imwrite('images/cap.jpg', frame)
-                faceswap('images/1.png', 'images/cap.jpg')
-                # faceswap('images/ab2.jpg', 'images/cap.jpg')
-                # faceswap('images/ab3.jpg', 'images/cap.jpg')
+                tcp_thread.start()
 
             # Recolor Feed
             image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -195,17 +198,29 @@ def video_start():
             '''
 
             # idx 0 :  주먹, idx 0 : 보, idx 3 : 손가락 가르키기
+            # if angle_left <= 20 and idx == 3 and is_arm_stretched_right:
+            #     new_state = "start"
+            # elif is_arm_stretched_left and idx == 0 and wrist_right[0] <= 0.5 and arm_lifted_right == False:
+            #     new_state = "ready"
+            # elif is_arm_stretched_left and idx == 1 and wrist_right[0] <= 0.5:
+            #     new_state = "shot"
+            # elif arm_lifted_left == False and angle_left <= 30:
+            #     new_state = "change"
+            # else:
+            #     new_state = "Unknown"
+            # elif is_arm_stretched_left and is_arm_stretched_right and idx == 1 and wrist_right[0] <= 0.4:
+
             if angle_left <= 20 and idx == 3 and is_arm_stretched_right:
                 new_state = "start"
-            elif is_arm_stretched_left and idx == 0 and wrist_right[0] <= 0.5 and arm_lifted_right == False:
+            elif is_arm_stretched_left and idx == 0 and wrist_right[0] <= 0.4 and arm_lifted_right == False:
                 new_state = "ready"
-            elif is_arm_stretched_left and idx == 1 and wrist_right[0] <= 0.5:
+            elif is_arm_stretched_left and idx == 1 and wrist_right[0] <= 0.4:
                 new_state = "shot"
-            elif arm_lifted_left == False and angle_left <= 30:
+            elif arm_lifted_left == False and angle_left <= 40:
                 new_state = "change"
             else:
                 new_state = "Unknown"
-            # elif is_arm_stretched_left and is_arm_stretched_right and idx == 1 and wrist_right[0] <= 0.4:
+
             '''
                 소켓 전송 조건
                 
@@ -217,9 +232,6 @@ def video_start():
 
             if new_state != last_state and new_state != "Unknown":
                 last_state = new_state
-                start_time = time.time()
-                if time.time() - start_time >= 3:
-                    nocon = False
                 count += 1
 
                 if new_state == "shot":
@@ -227,10 +239,10 @@ def video_start():
                     sock.sendto(str.encode(str(new_state)),
                                 serverAddresssPort)
 
-                if not nocon and new_state != "Unknown":
+                if new_state != "Unknown" and new_state != "shot":
                     print(new_state, count)
                     start_time = 0
-                    nocon = True
+
                     sock.sendto(str.encode(str(new_state)),
                                 serverAddresssPort)
 
@@ -240,6 +252,7 @@ def video_start():
                     except:
                         pass
 
+            image = cv2.resize(image, (1280, 720))
             cv2.imshow('vid', image)
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
